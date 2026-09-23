@@ -7,7 +7,7 @@ numpy<2.0
 yt-dlp                      # YouTube link theke reference audio ana
 
 # TTS engines
-TTS==0.22.0                 # Coqui XTTS-v2 (English + 16 languages)
+coqui-tts                   # Coqui XTTS-v2 (maintained fork; Python 3.12 compatible)
 chatterbox-tts             # base for BanglaTTS adapter
 resemble-perth             # `import perth` watermarker (Chatterbox dependency)
 huggingface_hub            # download Banglabox/chatterbox-bangla-tts
