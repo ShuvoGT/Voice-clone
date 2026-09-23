@@ -24,6 +24,14 @@ The parent polls --status-file (rewritten atomically at every stage). The proces
 exits 0 on success and nonzero on error (the error is also written to the status
 file with done=false). Heavy imports live inside functions so `--help` is instant.
 
+MEMORY NOTE (free-tier Colab T4, ~13 GB RAM): the ASR model is fully freed before
+the merge/train stage, ASR defaults to faster-whisper "medium" + int8, and the merge
+frees the base weights early. If the process is still SIGKILLed by the OS it exits
+with returncode -9 (uncatchable by Python, so the status file keeps its last stage) —
+the parent should map returncode == -9 to: "Out of memory (exit -9) — try a shorter
+clip or ASR_MODEL=small". In-process OOMs (MemoryError / CUDA OOM) are caught and
+written to the status file with that guidance automatically.
+
 Language handling:
   * bn: new_vocab_size = checkpoint/NEW_VOCAB_SIZE.txt (2530). With --keep-bangla,
         the released Bangla LoRA adapter is merged into a resized T3 first, so the
@@ -232,7 +240,7 @@ def setup_workspace(workdir):
 # --------------------------------------------------------------------------- #
 # 2. slice (silero-vad) + transcribe (faster-whisper) -> LJSpeech dataset      #
 # --------------------------------------------------------------------------- #
-def build_dataset(audio_path, data_dir, language,
+def build_dataset(audio_path, data_dir, language, asr_model="medium",
                   target_sr=24000, min_clip_s=4.0, max_clip_s=12.0, merge_gap_s=0.35):
     import csv
     import gc
@@ -302,24 +310,31 @@ def build_dataset(audio_path, data_dir, language,
     print(f"[slice] {len(clip_names)} clips", flush=True)
 
     # ---- transcribe with faster-whisper ----
+    # Default to the lighter "medium" model + int8 to keep peak RAM low on free-tier
+    # Colab (~13 GB). The ASR model MUST be fully freed before the merge/train stage.
     set_status(stage="asr", progress_pct=20,
-               message=f"Transcribing {len(clip_names)} clips ({language})")
+               message=f"Transcribing {len(clip_names)} clips ({language}, {asr_model})")
     from faster_whisper import WhisperModel
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    wm = WhisperModel("large-v3", device=dev, compute_type="float16" if dev == "cuda" else "int8")
+    compute_type = "int8_float16" if dev == "cuda" else "int8"
+    wm = WhisperModel(asr_model, device=dev, compute_type=compute_type)
 
     rows = []
     total = len(clip_names)
     for idx, name in enumerate(clip_names):
-        segs, _ = wm.transcribe(os.path.join(wavs, name), language=language,
-                                beam_size=5, vad_filter=False)
-        text = " ".join(seg.text.strip() for seg in segs).strip()
+        segs, _info = wm.transcribe(os.path.join(wavs, name), language=language,
+                                    beam_size=5, vad_filter=False)
+        text = " ".join(seg.text.strip() for seg in segs).strip()  # consume generator now
         if text:
             rows.append((name, text))
+        del segs, _info
         if idx % 10 == 0:
             set_status(stage="asr",
                        progress_pct=20 + int(15 * (idx + 1) / total),
                        message=f"Transcribed {idx + 1}/{total}")
+
+    # AGGRESSIVELY free ASR before anything else — no reference may survive into
+    # the merge/train stage (this is what caused the SIGKILL / exit -9 OOM).
     del wm
     gc.collect()
     try:
@@ -357,28 +372,45 @@ def build_bangla_base(workdir, vocab_size, out_pt):
     from src.chatterbox_.tts import ChatterboxTTS
     from src.model import resize_and_load_t3_weights
 
+    def _free():
+        gc.collect()
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     adapter = os.path.join(workdir, "checkpoint", "adapter")
+
+    # Load base on CPU, keep ONLY the T3 config + T3 weights, then free the rest
+    # (s3gen/ve are not needed for the merge and just waste ~1.3 GB of RAM).
     base = ChatterboxTTS.from_local("./pretrained_models", device="cpu")
-    ps = base.t3.state_dict()
     cfg = base.t3.hp
     cfg.text_tokens_dict_size = vocab_size
     if hasattr(cfg, "use_cache"):
         cfg.use_cache = False
+    ps = base.t3.state_dict()   # tensors keep t3 storage alive; s3gen/ve get GC'd
+    del base
+    _free()
+
+    # Resize into a fresh T3, then drop the old base weights before the LoRA merge.
     nt = T3(hp=cfg)
     nt = resize_and_load_t3_weights(nt, ps)
+    del ps
+    _free()
+
+    # Apply + merge the released Bangla LoRA, then free the PEFT wrapper immediately.
     peft_m = PeftModel.from_pretrained(nt, adapter, is_trainable=False)
     merged = peft_m.merge_and_unload()
+    del peft_m, nt
+    _free()
+
     sd = merged.state_dict()
     if "text_emb.weight" not in sd or sd["text_emb.weight"].shape[0] != vocab_size:
         raise RuntimeError(f"Merged T3 vocab mismatch: {sd.get('text_emb.weight', None)}")
     torch.save(sd, out_pt)
     print(f"[merge] Bangla base saved -> {out_pt} ({len(sd)} keys)", flush=True)
-    del base, nt, peft_m, merged, sd, ps
-    gc.collect()
-    try:
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
+    del merged, sd
+    _free()
 
 
 # --------------------------------------------------------------------------- #
@@ -427,13 +459,28 @@ def run_training(workdir, data_dir, out_local, vocab_size,
         return _TA(**kw)
     train.TrainingArguments = _TA_t4
 
-    # -- (c) preprocess stage status --
+    # -- (c) preprocess stage status + free VE/S3Gen VRAM before training --
+    import gc as _gc
     _orig_pp = train.preprocess_dataset_ljspeech
 
     def _pp(cfg, eng):
         set_status(stage="preprocess", progress_pct=40,
                    message="Extracting speech/speaker tokens")
-        return _orig_pp(cfg, eng)
+        out = _orig_pp(cfg, eng)
+        # VE/S3Gen were moved to GPU for preprocessing but are NOT used during the
+        # T3 training loop (only needed again at inference). Move them back to CPU
+        # to lower peak VRAM while the T3 trains.
+        try:
+            eng.ve.to("cpu")
+            eng.s3gen.to("cpu")
+        except Exception:
+            pass
+        _gc.collect()
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        return out
     train.preprocess_dataset_ljspeech = _pp
 
     # -- (d) Bangla weight overlay (keep Bangla) --
@@ -538,6 +585,10 @@ def build_parser():
     p.add_argument("--status-file", required=True,
                    help="JSON file continuously rewritten with progress.")
     p.add_argument("--epochs", type=int, default=12, help="Training epochs (default 12).")
+    p.add_argument("--asr-model", default=os.environ.get("ASR_MODEL", "medium"),
+                   help="faster-whisper model for transcription (default 'medium', or "
+                        "env ASR_MODEL). Use 'small'/'base' for even less RAM, "
+                        "'large-v3' for best accuracy if you have more RAM.")
     p.add_argument("--name", default=None, help="Optional human-readable voice name.")
     p.add_argument("--workdir", default=None,
                    help="Writable scratch dir (default: <tempdir>/tv_<voice-id>).")
@@ -588,7 +639,7 @@ def main(argv=None):
                    message=f"vocab={vocab_size} base_vocab={base_vocab} keep_bangla={keep_bangla}")
 
         # 2. dataset (slice + transcribe)
-        n_rows = build_dataset(args.audio, data_dir, args.language)
+        n_rows = build_dataset(args.audio, data_dir, args.language, asr_model=args.asr_model)
         set_status(stage="asr", progress_pct=36, message=f"Dataset ready ({n_rows} clips)")
 
         # 3b. Bangla merge (init that keeps Bangla)
@@ -614,8 +665,12 @@ def main(argv=None):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        set_status(stage="error", message=f"{type(e).__name__}: {e}",
-                   done=False, error=str(e))
+        msg = f"{type(e).__name__}: {e}"
+        low = f"{type(e).__name__} {e}".lower()
+        if isinstance(e, MemoryError) or "out of memory" in low or "cuda" in low and "memory" in low:
+            msg = ("Out of memory — try a shorter clip or ASR_MODEL=small "
+                   "(--asr-model small). Details: " + msg)
+        set_status(stage="error", message=msg, done=False, error=msg)
         return 1
 
 

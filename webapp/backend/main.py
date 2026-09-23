@@ -352,7 +352,12 @@ def train_status(job_id: str):
     alive = j["proc"].poll() is None
     st["alive"] = alive
     if not alive and not st["done"] and not st["error"]:
-        st["error"] = f"Training process theme geche (exit {j['proc'].returncode})."
+        rc = j["proc"].returncode
+        if rc == -9:
+            st["error"] = ("Out of memory (exit -9) — voice clip choto koro (5-6 min), "
+                           "ba ASR_MODEL=small diye chesta koro.")
+        else:
+            st["error"] = f"Training process theme geche (exit {rc})."
     return st
 
 
