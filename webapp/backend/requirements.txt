@@ -25,3 +25,15 @@ tokenizers==0.20.3
 transformers==4.46.3
 bnnumerizer
 bnunicodenormalizer
+
+# ---- Training (train_voice.py: slice + ASR + fine-tune) ----
+faster-whisper             # Bangla/English ASR for dataset transcripts
+silero-vad==6.2.0          # audio slicing at natural pauses
+num2words
+ffmpeg-python
+pyloudnorm
+tensorboard
+pandas
+tqdm
+gdown
+hf_transfer
