@@ -135,7 +135,7 @@ def health():
     return {
         "status": "ok",
         "device": "cuda" if torch.cuda.is_available() else "cpu",
-        "engines": {"english_multilingual": "xtts_v2", "bangla": "chatterbox-bangla"},
+        "engines": {"english_multilingual": "chatterbox-multilingual", "bangla": "chatterbox-bangla"},
     }
 
 

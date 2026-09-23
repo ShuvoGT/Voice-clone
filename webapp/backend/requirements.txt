@@ -3,14 +3,16 @@ fastapi==0.111.0
 uvicorn[standard]==0.30.1
 python-multipart==0.0.9
 soundfile==0.12.1
-numpy<2.0
-yt-dlp                      # YouTube link theke reference audio ana
+librosa                     # audio convert fallback
 
-# TTS engines
-coqui-tts                   # Coqui XTTS-v2 (maintained fork; Python 3.12 compatible)
-chatterbox-tts             # base for BanglaTTS adapter
-resemble-perth             # `import perth` watermarker (Chatterbox dependency)
-huggingface_hub            # download Banglabox/chatterbox-bangla-tts
-peft                       # LoRA adapter load (BanglaTTS)
-torch>=2.1                 # GPU build recommended (Colab). CPU o cholе (slow).
+# TTS — SINGLE stack (Chatterbox) so deps don't conflict:
+#   English + 20+ languages  -> ChatterboxMultilingualTTS
+#   Bangla (fine-tuned)      -> Banglabox/chatterbox-bangla-tts (BanglaTTS)
+chatterbox-tts
+resemble-perth              # `import perth` watermarker (Chatterbox dependency)
+peft                        # LoRA adapter load (BanglaTTS)
+huggingface_hub             # download Banglabox model
+torch>=2.1
 torchaudio>=2.1
+
+yt-dlp                      # YouTube link theke reference audio ana
