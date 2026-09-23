@@ -1,0 +1,14 @@
+# FastAPI backend for voice cloning
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+soundfile==0.12.1
+numpy<2.0
+
+# TTS engines
+TTS==0.22.0                 # Coqui XTTS-v2 (English + 16 languages)
+chatterbox-tts             # base for BanglaTTS adapter
+huggingface_hub            # download Banglabox/chatterbox-bangla-tts
+peft                       # LoRA adapter load (BanglaTTS)
+torch>=2.1                 # GPU build recommended (Colab). CPU o cholе (slow).
+torchaudio>=2.1

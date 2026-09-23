@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Node / Vite
+node_modules/
+dist/
+.env
+.env.local
+
+# Audio / models (boro file, git e rakhio na)
+voices/*.wav
+voices/*.mp3
+output/*.wav
+output/*.mp3
+*.zip
+*.ckpt
+*.pth
+
+# keep folders
+!voices/.gitkeep
+!output/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
