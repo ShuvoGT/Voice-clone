@@ -46,7 +46,7 @@ Frontend tomar laptop e cholе, heavy inference Colab GPU te. Free.
 ### Step A — Backend (Colab GPU)
 
 1. `webapp/colab_backend.ipynb` Colab e open koro → Runtime → **T4 GPU**.
-2. Cell run koro; jokhon bolbe, `backend/` folder er **main.py, engines.py, requirements.txt** upload koro.
+2. Cell run koro — code **GitHub theke auto clone** hobe (`ShuvoGT/Voice-clone`), deps install hobe.
 3. Shesh cell ekta URL dibe:
    ```
    VITE_API_URL=https://xxxx-xxxx.trycloudflare.com
