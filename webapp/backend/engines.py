@@ -102,15 +102,44 @@ class MultilingualEngine:
 # --------------------------------------------------------------------------- #
 # Bangla  (Banglabox fine-tuned)                                               #
 # --------------------------------------------------------------------------- #
+def _build_bangla_kit(snapshot):
+    """infer.py root/{pretrained_models,adapter,NEW_VOCAB_SIZE.txt} ek jayga e chay,
+    kintu repo te egula chorano. Symlink diye ekta 'kit' assemble kori."""
+    import tempfile
+    kit = os.path.join(tempfile.gettempdir(), "banglabox_kit")
+    os.makedirs(kit, exist_ok=True)
+
+    pm = _find(snapshot, "ve.safetensors")            # .../pretrained_models
+    adapter = _find(snapshot, "adapter_config.json")  # .../checkpoint/adapter
+    vocab = _find(snapshot, "NEW_VOCAB_SIZE.txt")     # .../checkpoint
+    if not (pm and adapter and vocab):
+        raise RuntimeError(f"Kit parts missing: pm={pm}, adapter={adapter}, vocab={vocab}")
+
+    def link(src, dst):
+        if os.path.lexists(dst):
+            return
+        try:
+            os.symlink(src, dst)
+        except OSError:
+            import shutil
+            (shutil.copytree if os.path.isdir(src) else shutil.copy)(src, dst)
+
+    link(pm, os.path.join(kit, "pretrained_models"))
+    link(adapter, os.path.join(kit, "adapter"))
+    link(os.path.join(vocab, "NEW_VOCAB_SIZE.txt"), os.path.join(kit, "NEW_VOCAB_SIZE.txt"))
+    return kit
+
+
 class BanglaEngine:
     def __init__(self):
         self._tts = None
 
     def _load(self):
         if self._tts is None:
-            _ensure_banglabox()
+            snapshot = _ensure_banglabox()
+            kit = _build_bangla_kit(snapshot)
             from infer import BanglaTTS  # noqa: class from Banglabox repo
-            self._tts = BanglaTTS(device=_device())
+            self._tts = BanglaTTS(root=kit, device=_device())
         return self._tts
 
     def synthesize(self, text, ref_wav, out_path, language="bn"):
