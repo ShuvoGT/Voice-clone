@@ -126,8 +126,10 @@ class MultilingualEngine:
         def one(t):
             return _to_np(m.generate(t, language_id=lang, audio_prompt_path=ref_wav, **gen))
 
-        if pause_ms > 0:
-            chunks = [one(s) for s in _split_sentences(text)] or [one(text)]
+        # Lomba/multi-sentence text always chunk kori — nahole drift/skip/barti hoy.
+        sentences = _split_sentences(text)
+        if len(sentences) > 1:
+            chunks = [one(s) for s in sentences]
             return _save(_concat(chunks, m.sr, pause_ms), out_path, m.sr)
         return _save(one(text), out_path, m.sr)
 
@@ -182,9 +184,11 @@ class BanglaEngine:
         import infer
         infer.GEN.update(exaggeration=exaggeration, cfg_weight=cfg_weight, temperature=temperature)
 
-        if pause_ms > 0:
+        # Lomba/multi-sentence text always chunk kori — nahole drift/skip/barti hoy.
+        sentences = _split_sentences(text)
+        if len(sentences) > 1:
             chunks, sr = [], None
-            for s in (_split_sentences(text) or [text]):
+            for s in sentences:
                 w, sr = tts.tts(s, ref_wav)
                 chunks.append(_to_np(w))
             return _save(_concat(chunks, sr, pause_ms), out_path, sr)

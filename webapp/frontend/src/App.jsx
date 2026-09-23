@@ -254,7 +254,7 @@ export default function App() {
                   <input
                     type="number"
                     min={3}
-                    max={60}
+                    max={600}
                     value={ytDur}
                     onChange={(e) => setYtDur(Number(e.target.value))}
                     className="w-20 bg-slate-800 border border-white/10 rounded px-2 py-1"

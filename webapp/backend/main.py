@@ -222,7 +222,7 @@ async def youtube_audio(
     if not re.match(r"^https?://", url.strip()):
         raise HTTPException(400, "Thik YouTube URL daw (https:// diye shuru).")
     start = max(0.0, float(start))
-    duration = max(3.0, min(float(duration), 60.0))   # 3-60 sec clamp
+    duration = max(3.0, min(float(duration), 600.0))  # up to 10 min
 
     job = uuid.uuid4().hex[:12]
     out_wav = os.path.join(WORK_DIR, f"{job}_yt.wav")
