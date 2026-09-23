@@ -9,6 +9,7 @@ yt-dlp                      # YouTube link theke reference audio ana
 # TTS engines
 TTS==0.22.0                 # Coqui XTTS-v2 (English + 16 languages)
 chatterbox-tts             # base for BanglaTTS adapter
+resemble-perth             # `import perth` watermarker (Chatterbox dependency)
 huggingface_hub            # download Banglabox/chatterbox-bangla-tts
 peft                       # LoRA adapter load (BanglaTTS)
 torch>=2.1                 # GPU build recommended (Colab). CPU o cholе (slow).
