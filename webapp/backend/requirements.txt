@@ -2,17 +2,30 @@
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 python-multipart==0.0.9
-soundfile==0.12.1
-librosa                     # audio convert fallback
 
-# TTS — SINGLE stack (Chatterbox) so deps don't conflict:
-#   English + 20+ languages  -> ChatterboxMultilingualTTS
-#   Bangla (fine-tuned)      -> Banglabox/chatterbox-bangla-tts (BanglaTTS)
+# ---- Shared ML stack, pinned to Banglabox inference/requirements.txt ----
+# (transformers/peft/tokenizers version match na korle BloomPreTrainedModel error ase)
+transformers==4.46.3
+tokenizers==0.20.3
+peft==0.17.1
+accelerate==1.14.0
+diffusers==0.29.0
+safetensors==0.5.3
+numpy==2.1.2
+librosa==0.11.0
+soundfile==0.13.1
+s3tokenizer==0.3.0
+conformer==0.3.2
+einops==0.8.2
+omegaconf==2.3.1
+bnnumerizer
+bnunicodenormalizer
+resemble-perth              # `import perth` watermarker
+
+# ---- TTS engines (single Chatterbox stack) ----
+#   English + 20+ languages -> ChatterboxMultilingualTTS (pip chatterbox-tts)
+#   Bangla (fine-tuned)     -> Banglabox repo's vendored chatterbox_ (via infer.py)
 chatterbox-tts
-resemble-perth              # `import perth` watermarker (Chatterbox dependency)
-peft                        # LoRA adapter load (BanglaTTS)
-huggingface_hub             # download Banglabox model
-torch>=2.1
-torchaudio>=2.1
 
-yt-dlp                      # YouTube link theke reference audio ana
+huggingface_hub            # download Banglabox model
+yt-dlp                     # YouTube link theke reference audio ana
