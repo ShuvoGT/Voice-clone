@@ -24,7 +24,11 @@ const SAMPLE_TEXT = {
 };
 
 export default function App() {
-  const [tab, setTab] = useState("record"); // record | upload
+  const [tab, setTab] = useState("record"); // record | upload | youtube
+  const [ytUrl, setYtUrl] = useState("");
+  const [ytStart, setYtStart] = useState(0);
+  const [ytDur, setYtDur] = useState(25);
+  const [ytBusy, setYtBusy] = useState(false);
   const [refBlob, setRefBlob] = useState(null);
   const [refUrl, setRefUrl] = useState(null);
   const [refName, setRefName] = useState("");
@@ -88,6 +92,28 @@ export default function App() {
     if (f) setReference(f, f.name);
   }
 
+  async function fetchYoutube() {
+    setError("");
+    if (!/^https?:\/\//.test(ytUrl.trim())) {
+      return setError("Thik YouTube URL daw (https:// diye).");
+    }
+    setYtBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("url", ytUrl.trim());
+      fd.append("start", String(ytStart || 0));
+      fd.append("duration", String(ytDur || 25));
+      const res = await fetch(`${API_URL}/api/youtube-audio`, { method: "POST", body: fd });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const blob = await res.blob();
+      setReference(blob, "youtube_reference.wav");
+    } catch (e) {
+      setError("YouTube audio fail: " + e.message);
+    } finally {
+      setYtBusy(false);
+    }
+  }
+
   async function generate() {
     setError("");
     if (resultUrl) URL.revokeObjectURL(resultUrl); // purano result cleanup
@@ -145,20 +171,24 @@ export default function App() {
         <section className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
           <h2 className="font-semibold mb-3">1. Reference voice</h2>
           <div className="flex gap-2 mb-4">
-            {["record", "upload"].map((t) => (
+            {[
+              ["record", "🎤 Record"],
+              ["upload", "📁 Upload"],
+              ["youtube", "🎬 YouTube"],
+            ].map(([t, lbl]) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`px-4 py-1.5 rounded-lg text-sm capitalize transition ${
+                className={`px-4 py-1.5 rounded-lg text-sm transition ${
                   tab === t ? "bg-indigo-500 text-white" : "bg-white/5 text-slate-300 hover:bg-white/10"
                 }`}
               >
-                {t === "record" ? "🎤 Record" : "📁 Upload"}
+                {lbl}
               </button>
             ))}
           </div>
 
-          {tab === "record" ? (
+          {tab === "record" && (
             <div className="flex items-center gap-4">
               {!recording ? (
                 <button
@@ -177,7 +207,9 @@ export default function App() {
               )}
               <span className="text-xs text-slate-400">10–30 sec clean audio-i enough</span>
             </div>
-          ) : (
+          )}
+
+          {tab === "upload" && (
             <label className="block">
               <input
                 type="file"
@@ -186,6 +218,51 @@ export default function App() {
                 className="block w-full text-sm text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-500 file:text-white hover:file:bg-indigo-600 cursor-pointer"
               />
             </label>
+          )}
+
+          {tab === "youtube" && (
+            <div className="space-y-3">
+              <input
+                type="url"
+                value={ytUrl}
+                onChange={(e) => setYtUrl(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=..."
+                className="w-full bg-slate-800/70 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <div className="flex gap-3 items-center text-sm">
+                <label className="flex items-center gap-1 text-slate-400">
+                  Start (s)
+                  <input
+                    type="number"
+                    min={0}
+                    value={ytStart}
+                    onChange={(e) => setYtStart(Number(e.target.value))}
+                    className="w-20 bg-slate-800 border border-white/10 rounded px-2 py-1"
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-slate-400">
+                  Length (s)
+                  <input
+                    type="number"
+                    min={3}
+                    max={60}
+                    value={ytDur}
+                    onChange={(e) => setYtDur(Number(e.target.value))}
+                    className="w-20 bg-slate-800 border border-white/10 rounded px-2 py-1"
+                  />
+                </label>
+              </div>
+              <button
+                onClick={fetchYoutube}
+                disabled={ytBusy || !online}
+                className="px-5 py-2.5 bg-rose-500 hover:bg-rose-600 disabled:opacity-40 rounded-xl font-medium transition"
+              >
+                {ytBusy ? "⏳ Audio ana hocche..." : "🎬 Fetch audio"}
+              </button>
+              <p className="text-xs text-slate-500">
+                Video theke {ytDur}s clip nibe (start {ytStart}s theke). Sudhu nijer / onumoti-prapto content.
+              </p>
+            </div>
           )}
 
           {refUrl && (

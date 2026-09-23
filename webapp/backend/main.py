@@ -13,7 +13,9 @@ Run (local, dev):
 GPU nai bole local e slow / Bangla nao cholte pare.
 Colab GPU te chalate: ../colab_backend.ipynb use koro (public URL dey).
 """
+import glob
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -89,6 +91,44 @@ def _safe_remove(*paths):
             pass
 
 
+def _youtube_to_wav(url: str, start: float, duration: float, dst: str) -> str:
+    """YouTube link theke audio niye [start, start+duration] segment mono WAV e banay."""
+    if not shutil.which("yt-dlp"):
+        raise HTTPException(500, "yt-dlp install nai (backend requirements re-install koro).")
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(500, "ffmpeg nai (backend host e).")
+
+    base = dst + ".src"
+    dl = ["yt-dlp", "-f", "bestaudio/best", "--no-playlist", "--quiet",
+          "--no-warnings", "-o", base + ".%(ext)s"]
+
+    # speed: sudhu dorkari section download korar chesta
+    section = f"*{start}-{start + duration}"
+    p1 = subprocess.run(dl + ["--download-sections", section, url],
+                        capture_output=True, text=True)
+    srcs = glob.glob(base + ".*")
+    trim = False
+    if not srcs:
+        # fallback: full audio download, pore ffmpeg e cut
+        p2 = subprocess.run(dl + [url], capture_output=True, text=True)
+        srcs = glob.glob(base + ".*")
+        if not srcs:
+            err = (p1.stderr or "")[-250:] + " | " + (p2.stderr or "")[-250:]
+            raise HTTPException(400, f"YouTube audio download fail: {err}")
+        trim = True
+
+    src = srcs[0]
+    cmd = ["ffmpeg", "-y"]
+    if trim:
+        cmd += ["-ss", str(start), "-t", str(duration)]
+    cmd += ["-i", src, "-ac", "1", "-ar", str(TARGET_SR), dst]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    _safe_remove(src)
+    if proc.returncode != 0 or not os.path.exists(dst) or os.path.getsize(dst) == 0:
+        raise HTTPException(400, f"Audio process fail: {(proc.stderr or '')[-250:]}")
+    return dst
+
+
 @app.get("/api/health")
 def health():
     import torch
@@ -155,6 +195,38 @@ async def clone(
         media_type="audio/wav",
         filename=f"cloned_{language}.wav",
         background=BackgroundTask(_safe_remove, out_path),
+    )
+
+
+@app.post("/api/youtube-audio")
+async def youtube_audio(
+    url: str = Form(..., description="YouTube video URL"),
+    start: float = Form(0, description="Segment shuru (second)"),
+    duration: float = Form(25, description="Segment length (second, 3-60)"),
+):
+    """YouTube link theke reference audio clip ber kore (WAV) — clone er jonno."""
+    if not re.match(r"^https?://", url.strip()):
+        raise HTTPException(400, "Thik YouTube URL daw (https:// diye shuru).")
+    start = max(0.0, float(start))
+    duration = max(3.0, min(float(duration), 60.0))   # 3-60 sec clamp
+
+    job = uuid.uuid4().hex[:12]
+    out_wav = os.path.join(WORK_DIR, f"{job}_yt.wav")
+
+    try:
+        _youtube_to_wav(url.strip(), start, duration, out_wav)
+    except HTTPException:
+        _safe_remove(out_wav)
+        raise
+    except Exception as e:
+        _safe_remove(out_wav)
+        raise HTTPException(500, f"YouTube audio fail: {type(e).__name__}: {e}")
+
+    return FileResponse(
+        out_wav,
+        media_type="audio/wav",
+        filename="youtube_reference.wav",
+        background=BackgroundTask(_safe_remove, out_wav),
     )
 
 

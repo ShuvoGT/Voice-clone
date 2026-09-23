@@ -4,6 +4,7 @@ uvicorn[standard]==0.30.1
 python-multipart==0.0.9
 soundfile==0.12.1
 numpy<2.0
+yt-dlp                      # YouTube link theke reference audio ana
 
 # TTS engines
 TTS==0.22.0                 # Coqui XTTS-v2 (English + 16 languages)
