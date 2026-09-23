@@ -36,6 +36,11 @@ export default function App() {
   const [seconds, setSeconds] = useState(0);
   const [language, setLanguage] = useState("bn");
   const [text, setText] = useState(SAMPLE_TEXT.bn);
+  const [exaggeration, setExaggeration] = useState(0.5);
+  const [cfgWeight, setCfgWeight] = useState(0.5);
+  const [temperature, setTemperature] = useState(0.8);
+  const [pauseMs, setPauseMs] = useState(0);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [resultUrl, setResultUrl] = useState(null);
@@ -128,6 +133,10 @@ export default function App() {
       fd.append("reference", refBlob, fname || "reference.wav");
       fd.append("text", text);
       fd.append("language", language);
+      fd.append("exaggeration", String(exaggeration));
+      fd.append("cfg_weight", String(cfgWeight));
+      fd.append("temperature", String(temperature));
+      fd.append("pause_ms", String(pauseMs));
 
       const res = await fetch(`${API_URL}/api/clone`, { method: "POST", body: fd });
       if (!res.ok) {
@@ -292,7 +301,7 @@ export default function App() {
               ))}
             </select>
             <span className="text-xs text-slate-500 self-center">
-              {language === "bn" ? "→ Chatterbox-Bangla" : "→ XTTS-v2"}
+              {language === "bn" ? "→ Chatterbox-Bangla" : "→ Chatterbox multilingual"}
             </span>
           </div>
           <textarea
@@ -304,6 +313,51 @@ export default function App() {
             className="w-full bg-slate-800/70 border border-white/10 rounded-xl p-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
           <div className="text-right text-xs text-slate-500 mt-1">{text.length}/1000</div>
+        </section>
+
+        {/* Advanced controls: emotion, pace, pauses */}
+        <section className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
+          <button
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="w-full flex items-center justify-between font-semibold"
+          >
+            <span>3. Advanced — emotion & pacing</span>
+            <span className="text-slate-400 text-sm">{showAdvanced ? "▲" : "▼"}</span>
+          </button>
+
+          {showAdvanced && (
+            <div className="mt-4 space-y-4">
+              <Slider
+                label="🎭 Emotion (exaggeration)"
+                hint="Beshi = beshi expressive/emotional"
+                min={0} max={1.2} step={0.05}
+                value={exaggeration} onChange={setExaggeration}
+              />
+              <Slider
+                label="🐢 Pace (cfg weight)"
+                hint="Kom = slower + beshi natural emotion"
+                min={0.2} max={1} step={0.05}
+                value={cfgWeight} onChange={setCfgWeight}
+              />
+              <Slider
+                label="🎲 Variation (temperature)"
+                hint="Beshi = beshi life, kom stable"
+                min={0.1} max={1.5} step={0.05}
+                value={temperature} onChange={setTemperature}
+              />
+              <Slider
+                label="⏸️ Line gap (pause)"
+                hint="Sentence-er majhe silence (ms). 0 = off"
+                min={0} max={1500} step={50} unit="ms"
+                value={pauseMs} onChange={(v) => setPauseMs(Math.round(v))}
+              />
+              <div className="flex gap-2 flex-wrap pt-1">
+                <Preset label="Natural" onClick={() => { setExaggeration(0.5); setCfgWeight(0.5); setTemperature(0.8); setPauseMs(0); }} />
+                <Preset label="Emotional" onClick={() => { setExaggeration(0.9); setCfgWeight(0.3); setTemperature(0.9); setPauseMs(250); }} />
+                <Preset label="Calm / news" onClick={() => { setExaggeration(0.35); setCfgWeight(0.6); setTemperature(0.6); setPauseMs(150); }} />
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Step 3: generate */}
@@ -340,5 +394,40 @@ export default function App() {
         </p>
       </div>
     </div>
+  );
+}
+
+function Slider({ label, hint, min, max, step, value, onChange, unit = "" }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between text-sm mb-1">
+        <span className="text-slate-200">{label}</span>
+        <span className="text-indigo-300 tabular-nums">
+          {value}
+          {unit}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-indigo-500"
+      />
+      <p className="text-xs text-slate-500 mt-0.5">{hint}</p>
+    </div>
+  );
+}
+
+function Preset({ label, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="px-3 py-1.5 rounded-lg text-xs bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 transition"
+    >
+      {label}
+    </button>
   );
 }

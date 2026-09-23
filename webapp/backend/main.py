@@ -144,12 +144,22 @@ async def clone(
     reference: UploadFile = File(..., description="Reference voice clip (10-30s clean)"),
     text: str = Form(..., description="Text to speak in the cloned voice"),
     language: str = Form("en", description="'bn' for Bangla, else en/hi/ar/es/fr/..."),
+    exaggeration: float = Form(0.5, description="Emotion intensity 0-1 (higher = more expressive)"),
+    cfg_weight: float = Form(0.5, description="Pace/adherence 0-1 (lower = slower, more emotional)"),
+    temperature: float = Form(0.8, description="Variation 0.1-1.5"),
+    pause_ms: int = Form(0, description="Line gap: silence (ms) between sentences; 0 = off"),
 ):
     text = (text or "").strip()
     if not text:
         raise HTTPException(400, "Text khali.")
     if len(text) > MAX_TEXT:
         raise HTTPException(400, f"Text boro (max {MAX_TEXT} chars). Chhoto kore chalao.")
+
+    # clamp params to safe ranges
+    exaggeration = max(0.0, min(float(exaggeration), 1.5))
+    cfg_weight = max(0.0, min(float(cfg_weight), 1.0))
+    temperature = max(0.1, min(float(temperature), 1.5))
+    pause_ms = max(0, min(int(pause_ms), 2000))
 
     ext = os.path.splitext(reference.filename or "")[1].lower()
     if ext not in ALLOWED_AUDIO:
@@ -176,7 +186,11 @@ async def clone(
 
     # synthesize
     try:
-        engines.synthesize(text=text, ref_wav=ref_wav, out_path=out_path, language=language)
+        engines.synthesize(
+            text=text, ref_wav=ref_wav, out_path=out_path, language=language,
+            exaggeration=exaggeration, cfg_weight=cfg_weight,
+            temperature=temperature, pause_ms=pause_ms,
+        )
     except HTTPException:
         _safe_remove(raw_path, ref_wav, out_path)
         raise

@@ -10,6 +10,7 @@ Lazy-loaded; GPU (CUDA) if available.
 """
 import functools
 import os
+import re
 import sys
 
 import numpy as np
@@ -19,6 +20,30 @@ import soundfile as sf
 def _device():
     import torch
     return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _split_sentences(text):
+    """Bangla (।) + English (.!?) + newline diye sentence e bhag kore."""
+    parts = re.split(r"(?<=[।!?\.])\s+|\n+", text.strip())
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _to_np(wav):
+    import torch
+    if isinstance(wav, torch.Tensor):
+        return wav.detach().cpu().float().squeeze().numpy()
+    return np.asarray(wav, dtype=np.float32).squeeze()
+
+
+def _concat(chunks, sr, pause_ms):
+    """Numpy wav chunk gula majhe pause_ms silence diye jora dey."""
+    gap = np.zeros(int(sr * pause_ms / 1000.0), dtype=np.float32)
+    out = []
+    for i, c in enumerate(chunks):
+        if i:
+            out.append(gap)
+        out.append(np.asarray(c, dtype=np.float32).squeeze())
+    return np.concatenate(out) if out else np.zeros(1, dtype=np.float32)
 
 
 def _find(root, filename):
@@ -92,11 +117,19 @@ class MultilingualEngine:
             self._m = ChatterboxMultilingualTTS.from_pretrained(device=_device())
         return self._m
 
-    def synthesize(self, text, ref_wav, out_path, language="en"):
+    def synthesize(self, text, ref_wav, out_path, language="en",
+                   exaggeration=0.5, cfg_weight=0.5, temperature=0.8, pause_ms=0):
         m = self._load()
         lang = self.LANG_MAP.get(language, "en")
-        wav = m.generate(text, language_id=lang, audio_prompt_path=ref_wav)
-        return _save(wav, out_path, m.sr)
+        gen = dict(exaggeration=exaggeration, cfg_weight=cfg_weight, temperature=temperature)
+
+        def one(t):
+            return _to_np(m.generate(t, language_id=lang, audio_prompt_path=ref_wav, **gen))
+
+        if pause_ms > 0:
+            chunks = [one(s) for s in _split_sentences(text)] or [one(text)]
+            return _save(_concat(chunks, m.sr, pause_ms), out_path, m.sr)
+        return _save(one(text), out_path, m.sr)
 
 
 # --------------------------------------------------------------------------- #
@@ -142,9 +175,21 @@ class BanglaEngine:
             self._tts = BanglaTTS(root=kit, device=_device())
         return self._tts
 
-    def synthesize(self, text, ref_wav, out_path, language="bn"):
+    def synthesize(self, text, ref_wav, out_path, language="bn",
+                   exaggeration=0.5, cfg_weight=0.5, temperature=0.8, pause_ms=0):
         tts = self._load()
-        wav, sr = tts.tts(text, ref_wav)          # (float32 waveform, sample_rate)
+        # infer.GEN (module-level locked params) override kori emotion/pace er jonno
+        import infer
+        infer.GEN.update(exaggeration=exaggeration, cfg_weight=cfg_weight, temperature=temperature)
+
+        if pause_ms > 0:
+            chunks, sr = [], None
+            for s in (_split_sentences(text) or [text]):
+                w, sr = tts.tts(s, ref_wav)
+                chunks.append(_to_np(w))
+            return _save(_concat(chunks, sr, pause_ms), out_path, sr)
+
+        wav, sr = tts.tts(text, ref_wav)
         return _save(wav, out_path, sr)
 
 
@@ -161,8 +206,10 @@ def _bangla():
     return BanglaEngine()
 
 
-def synthesize(text: str, ref_wav: str, out_path: str, language: str = "en"):
-    """Pick engine by language. 'bn' -> Bangla (fine-tuned), else -> multilingual."""
-    if language == "bn":
-        return _bangla().synthesize(text, ref_wav, out_path, language)
-    return _multi().synthesize(text, ref_wav, out_path, language)
+def synthesize(text: str, ref_wav: str, out_path: str, language: str = "en", **params):
+    """Pick engine by language. 'bn' -> Bangla (fine-tuned), else -> multilingual.
+
+    params: exaggeration, cfg_weight, temperature, pause_ms
+    """
+    engine = _bangla() if language == "bn" else _multi()
+    return engine.synthesize(text, ref_wav, out_path, language, **params)
