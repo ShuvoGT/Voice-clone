@@ -1,0 +1,1 @@
+{"detail":"Generate fail: ImportError: cannot import name 'is_jax_tensor' from 'transformers.utils' (/usr/local/lib/python3.13/dist-packages/transformers/utils/__init__.py)"}
