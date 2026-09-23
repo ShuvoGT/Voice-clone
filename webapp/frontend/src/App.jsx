@@ -46,16 +46,84 @@ export default function App() {
   const [resultUrl, setResultUrl] = useState(null);
   const [health, setHealth] = useState(null);
 
+  // dashboard: view + trained voices
+  const [view, setView] = useState("generate"); // generate | train
+  const [voices, setVoices] = useState([]);
+  const [selectedVoice, setSelectedVoice] = useState(""); // voice_id for generation ("" = zero-shot)
+
+  // train form
+  const [trainName, setTrainName] = useState("");
+  const [trainLang, setTrainLang] = useState("bn");
+  const [trainSrc, setTrainSrc] = useState("upload"); // upload | youtube
+  const [trainFile, setTrainFile] = useState(null);
+  const [trainYt, setTrainYt] = useState("");
+  const [trainStatus, setTrainStatus] = useState(null);
+  const [training, setTraining] = useState(false);
+
   const mediaRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
+  const pollRef = useRef(null);
 
   useEffect(() => {
     fetch(`${API_URL}/api/health`)
       .then((r) => r.json())
       .then(setHealth)
       .catch(() => setHealth({ status: "offline" }));
+    refreshVoices();
   }, []);
+
+  function refreshVoices() {
+    fetch(`${API_URL}/api/voices`)
+      .then((r) => r.json())
+      .then((v) => setVoices(Array.isArray(v) ? v : []))
+      .catch(() => {});
+  }
+
+  async function startTraining() {
+    setError("");
+    if (!trainName.trim()) return setError("Voice er ekta naam dao.");
+    if (trainSrc === "upload" && !trainFile) return setError("Voice file (5-10 min) upload koro.");
+    if (trainSrc === "youtube" && !/^https?:\/\//.test(trainYt.trim()))
+      return setError("Thik YouTube URL dao.");
+    setTraining(true);
+    setTrainStatus({ stage: "starting", progress_pct: 0, message: "Shuru hocche..." });
+    try {
+      const fd = new FormData();
+      fd.append("voice_name", trainName.trim());
+      fd.append("language", trainLang);
+      if (trainSrc === "upload") fd.append("reference", trainFile, trainFile.name);
+      else {
+        fd.append("youtube_url", trainYt.trim());
+        fd.append("duration", "600");
+      }
+      const res = await fetch(`${API_URL}/api/train`, { method: "POST", body: fd });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const { job_id } = await res.json();
+      pollTraining(job_id);
+    } catch (e) {
+      setError("Training start fail: " + e.message);
+      setTraining(false);
+      setTrainStatus(null);
+    }
+  }
+
+  function pollTraining(jobId) {
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const st = await fetch(`${API_URL}/api/train/status/${jobId}`).then((r) => r.json());
+        setTrainStatus(st);
+        if (st.done || st.error) {
+          clearInterval(pollRef.current);
+          setTraining(false);
+          refreshVoices();
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 5000);
+  }
 
   function setReference(blob, name) {
     if (refUrl) URL.revokeObjectURL(refUrl);
@@ -123,14 +191,18 @@ export default function App() {
     setError("");
     if (resultUrl) URL.revokeObjectURL(resultUrl); // purano result cleanup
     setResultUrl(null);
-    if (!refBlob) return setError("Age reference voice record ba upload koro.");
+    if (!refBlob && !selectedVoice)
+      return setError("Reference voice dao, ba ekta Trained voice select koro.");
     if (!text.trim()) return setError("Text likho.");
 
     setBusy(true);
     try {
       const fd = new FormData();
-      const fname = refName.endsWith(".webm") ? "reference.webm" : refName;
-      fd.append("reference", refBlob, fname || "reference.wav");
+      if (refBlob) {
+        const fname = refName.endsWith(".webm") ? "reference.webm" : refName;
+        fd.append("reference", refBlob, fname || "reference.wav");
+      }
+      if (selectedVoice) fd.append("voice_id", selectedVoice);
       fd.append("text", text);
       fd.append("language", language);
       fd.append("exaggeration", String(exaggeration));
@@ -176,9 +248,56 @@ export default function App() {
           </span>
         </div>
 
+        {/* Nav */}
+        <div className="flex gap-2 mb-6">
+          {[["generate", "🎙️ Generate"], ["train", "🎓 Train Voice"]].map(([v, l]) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition ${
+                view === v ? "bg-indigo-500 text-white" : "bg-white/5 text-slate-300 hover:bg-white/10"
+              }`}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {view === "generate" && (
+        <>
+        {/* Voice source: zero-shot or a trained voice */}
+        <section className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
+          <h2 className="font-semibold mb-3">Voice source</h2>
+          <select
+            value={selectedVoice}
+            onChange={(e) => {
+              const v = e.target.value;
+              setSelectedVoice(v);
+              const vc = voices.find((x) => x.voice_id === v);
+              if (vc) {
+                setLanguage(vc.language);
+                if (SAMPLE_TEXT[vc.language]) setText(SAMPLE_TEXT[vc.language]);
+              }
+            }}
+            className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="">Zero-shot (reference clip diye)</option>
+            {voices.map((v) => (
+              <option key={v.voice_id} value={v.voice_id}>
+                🎓 {v.name} ({v.language}) — trained
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-slate-500 mt-2">
+            {selectedVoice
+              ? "Trained voice — high similarity. Reference optional (na dile trained reference use hobe)."
+              : "Zero-shot — niche reference voice dao. Ba Train tab e nijer voice train koro."}
+          </p>
+        </section>
+
         {/* Step 1: reference */}
         <section className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
-          <h2 className="font-semibold mb-3">1. Reference voice</h2>
+          <h2 className="font-semibold mb-3">1. Reference voice {selectedVoice && <span className="text-xs text-slate-400">(optional)</span>}</h2>
           <div className="flex gap-2 mb-4">
             {[
               ["record", "🎤 Record"],
@@ -387,6 +506,125 @@ export default function App() {
               ⬇ Download WAV
             </a>
           </section>
+        )}
+        </>
+        )}
+
+        {view === "train" && (
+        <>
+          <section className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
+            <h2 className="font-semibold mb-1">🎓 Train your voice</h2>
+            <p className="text-xs text-slate-400 mb-4">
+              5-10 min voice dao → fine-tune → high-similarity voice. Bangla + English.
+              <br />⏱️ ~2-3 ghonta lagbe (T4)। Colab tab + ei page khola rakho।
+            </p>
+
+            <label className="block text-sm mb-1 text-slate-300">Voice er naam</label>
+            <input
+              value={trainName}
+              onChange={(e) => setTrainName(e.target.value)}
+              placeholder="jemon: Amar Bangla Voice"
+              className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+
+            <label className="block text-sm mb-1 text-slate-300">Language</label>
+            <select
+              value={trainLang}
+              onChange={(e) => setTrainLang(e.target.value)}
+              className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm mb-4"
+            >
+              <option value="bn">বাংলা (Bangla)</option>
+              <option value="en">English</option>
+            </select>
+
+            <div className="flex gap-2 mb-3">
+              {[["upload", "📁 Upload"], ["youtube", "🎬 YouTube"]].map(([t, l]) => (
+                <button
+                  key={t}
+                  onClick={() => setTrainSrc(t)}
+                  className={`px-4 py-1.5 rounded-lg text-sm transition ${
+                    trainSrc === t ? "bg-indigo-500 text-white" : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            {trainSrc === "upload" ? (
+              <input
+                type="file"
+                accept="audio/*"
+                onChange={(e) => setTrainFile(e.target.files?.[0] || null)}
+                className="block w-full text-sm text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-500 file:text-white cursor-pointer mb-2"
+              />
+            ) : (
+              <input
+                type="url"
+                value={trainYt}
+                onChange={(e) => setTrainYt(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=... (tomar/onumoti-prapto voice)"
+                className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            )}
+
+            <button
+              onClick={startTraining}
+              disabled={training || !online}
+              className="w-full mt-3 py-3 rounded-2xl font-semibold bg-indigo-500 hover:bg-indigo-600 disabled:opacity-40 transition"
+            >
+              {training ? "⏳ Training cholche..." : "🚀 Start training"}
+            </button>
+
+            {trainStatus && (
+              <div className="mt-4">
+                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                  <span>{trainStatus.stage}</span>
+                  <span>{trainStatus.progress_pct ?? 0}%</span>
+                </div>
+                <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full ${trainStatus.error ? "bg-rose-500" : "bg-indigo-500"}`}
+                    style={{ width: `${trainStatus.progress_pct ?? 0}%` }}
+                  />
+                </div>
+                <p className="text-xs text-slate-400 mt-1">{trainStatus.message}</p>
+                {trainStatus.done && <p className="text-emerald-300 text-sm mt-1">✅ Ready! Generate tab e voice-ta pabe.</p>}
+                {trainStatus.error && <p className="text-rose-300 text-sm mt-1">❌ {trainStatus.error}</p>}
+              </div>
+            )}
+          </section>
+
+          <section className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-semibold">Trained voices</h2>
+              <button onClick={refreshVoices} className="text-xs text-indigo-300 hover:text-indigo-200">↻ Refresh</button>
+            </div>
+            {voices.length === 0 ? (
+              <p className="text-sm text-slate-500">Ekhono kono trained voice nai.</p>
+            ) : (
+              <ul className="space-y-2">
+                {voices.map((v) => (
+                  <li key={v.voice_id} className="flex items-center justify-between bg-white/5 rounded-lg px-3 py-2 text-sm">
+                    <span>🎓 {v.name} <span className="text-slate-500">({v.language})</span></span>
+                    <button
+                      onClick={() => { setSelectedVoice(v.voice_id); setLanguage(v.language); setView("generate"); }}
+                      className="text-xs px-3 py-1 bg-indigo-500 hover:bg-indigo-600 rounded-lg"
+                    >
+                      Use →
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {error && (
+            <div className="mt-2 bg-rose-500/10 border border-rose-500/40 text-rose-200 text-sm rounded-xl p-3">
+              {error}
+            </div>
+          )}
+        </>
         )}
 
         <p className="text-center text-xs text-slate-500 mt-8">

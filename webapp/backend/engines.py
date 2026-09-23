@@ -198,6 +198,67 @@ class BanglaEngine:
 
 
 # --------------------------------------------------------------------------- #
+# Trained voice (user fine-tuned full-T3, from train_voice.py)                  #
+# --------------------------------------------------------------------------- #
+class TrainedVoiceEngine:
+    def __init__(self):
+        self._cache = {}   # voice_dir -> (model, sr, meta)
+
+    def _load(self, voice_dir):
+        import json
+        from safetensors.torch import load_file
+        meta = json.load(open(os.path.join(voice_dir, "voice.json"), encoding="utf-8"))
+        snap = _ensure_banglabox()
+        from src.chatterbox_.tts import ChatterboxTTS
+        from src.chatterbox_.models.t3.t3 import T3
+        from src.model import resize_and_load_t3_weights
+        dev = _device()
+        base = ChatterboxTTS.from_local(os.path.join(snap, "pretrained_models"), device="cpu")
+        cfg = base.t3.hp
+        cfg.text_tokens_dict_size = meta["vocab_size"]
+        if hasattr(cfg, "use_cache"):
+            cfg.use_cache = False
+        nt = T3(hp=cfg)
+        nt = resize_and_load_t3_weights(nt, base.t3.state_dict())
+        nt.load_state_dict(load_file(os.path.join(voice_dir, "t3_finetuned.safetensors")), strict=False)
+        base.t3 = nt
+        base.t3.to(dev).eval(); base.s3gen.to(dev).eval(); base.ve.to(dev).eval()
+        base.device = dev
+        return base, base.sr, meta
+
+    def synthesize(self, text, ref_wav, out_path, voice_dir,
+                   exaggeration=0.5, cfg_weight=0.5, temperature=0.8, pause_ms=0):
+        if voice_dir not in self._cache:
+            self._cache[voice_dir] = self._load(voice_dir)
+        m, sr, meta = self._cache[voice_dir]
+        is_bn = meta.get("language") == "bn"
+        gen = dict(exaggeration=exaggeration, cfg_weight=cfg_weight, temperature=temperature,
+                   repetition_penalty=1.5, min_p=0.05)
+
+        def prep(t):
+            if is_bn:
+                try:
+                    import bn_norm
+                    t = bn_norm.for_tts(t)
+                except Exception:
+                    pass
+                if not t.strip().startswith("[bn]"):
+                    t = "[bn]" + t.strip()
+            return t
+
+        def one(t):
+            w = m.generate(text=prep(t), audio_prompt_path=ref_wav, **gen)
+            if isinstance(w, tuple):
+                w = w[0]
+            return _to_np(w)
+
+        sentences = _split_sentences(text)
+        if len(sentences) > 1:
+            return _save(_concat([one(s) for s in sentences], sr, pause_ms), out_path, sr)
+        return _save(one(text), out_path, sr)
+
+
+# --------------------------------------------------------------------------- #
 # Router                                                                       #
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=1)
@@ -210,10 +271,18 @@ def _bangla():
     return BanglaEngine()
 
 
-def synthesize(text: str, ref_wav: str, out_path: str, language: str = "en", **params):
-    """Pick engine by language. 'bn' -> Bangla (fine-tuned), else -> multilingual.
+@functools.lru_cache(maxsize=1)
+def _trained():
+    return TrainedVoiceEngine()
+
+
+def synthesize(text: str, ref_wav: str, out_path: str, language: str = "en",
+               voice_dir: str = None, **params):
+    """Pick engine. voice_dir set -> user's trained voice; else 'bn'->Bangla, else multilingual.
 
     params: exaggeration, cfg_weight, temperature, pause_ms
     """
+    if voice_dir:
+        return _trained().synthesize(text, ref_wav, out_path, voice_dir, **params)
     engine = _bangla() if language == "bn" else _multi()
     return engine.synthesize(text, ref_wav, out_path, language, **params)

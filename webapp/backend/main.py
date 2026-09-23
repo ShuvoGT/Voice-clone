@@ -14,10 +14,12 @@ GPU nai bole local e slow / Bangla nao cholte pare.
 Colab GPU te chalate: ../colab_backend.ipynb use koro (public URL dey).
 """
 import glob
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 
@@ -27,6 +29,24 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 import engines
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Trained voices persist here. Google Drive (mounted in Colab) hole oikhane,
+# nahole local. colab_backend.ipynb Drive mount kore /content/drive/MyDrive dey.
+_DRIVE = "/content/drive/MyDrive"
+VOICES_DIR = os.environ.get("VOICES_DIR") or (
+    os.path.join(_DRIVE, "voiceclone_voices") if os.path.isdir(_DRIVE)
+    else os.path.join(tempfile.gettempdir(), "voiceclone_voices")
+)
+os.makedirs(VOICES_DIR, exist_ok=True)
+
+TRAIN_JOBS = {}   # job_id -> {status_file, voice_id, out_dir, proc}
+
+
+def _slug(name):
+    s = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return (s or "voice")[:32]
 
 app = FastAPI(title="Voice Cloning API", version="1.0.0")
 
@@ -136,14 +156,17 @@ def health():
         "status": "ok",
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "engines": {"english_multilingual": "chatterbox-multilingual", "bangla": "chatterbox-bangla"},
+        "voices_dir": VOICES_DIR,
+        "drive": os.path.isdir(_DRIVE),
     }
 
 
 @app.post("/api/clone")
 async def clone(
-    reference: UploadFile = File(..., description="Reference voice clip (10-30s clean)"),
+    reference: UploadFile = File(None, description="Reference voice clip (10-30s). Optional if voice_id given."),
     text: str = Form(..., description="Text to speak in the cloned voice"),
     language: str = Form("en", description="'bn' for Bangla, else en/hi/ar/es/fr/..."),
+    voice_id: str = Form("", description="Trained voice id (from /api/voices). Empty = zero-shot."),
     exaggeration: float = Form(0.5, description="Emotion intensity 0-1 (higher = more expressive)"),
     cfg_weight: float = Form(0.5, description="Pace/adherence 0-1 (lower = slower, more emotional)"),
     temperature: float = Form(0.8, description="Variation 0.1-1.5"),
@@ -161,33 +184,45 @@ async def clone(
     temperature = max(0.1, min(float(temperature), 1.5))
     pause_ms = max(0, min(int(pause_ms), 2000))
 
-    ext = os.path.splitext(reference.filename or "")[1].lower()
-    if ext not in ALLOWED_AUDIO:
-        raise HTTPException(400, f"Audio format support kore na: {ext}. WAV/MP3 daw.")
+    # trained voice?
+    voice_dir = None
+    voice_id = (voice_id or "").strip()
+    if voice_id:
+        voice_dir = os.path.join(VOICES_DIR, voice_id)
+        if not os.path.exists(os.path.join(voice_dir, "voice.json")):
+            raise HTTPException(404, f"Trained voice pawa jay nai: {voice_id}")
 
     job = uuid.uuid4().hex[:12]
-    raw_path = os.path.join(WORK_DIR, f"{job}_raw{ext}")
     ref_wav = os.path.join(WORK_DIR, f"{job}_ref.wav")
     out_path = os.path.join(WORK_DIR, f"{job}_out.wav")
+    raw_path = None
 
-    # reference save
-    data = await reference.read()
-    if not data:
-        raise HTTPException(400, "Reference audio khali.")
-    with open(raw_path, "wb") as f:
-        f.write(data)
-
-    # normalize -> mono wav (webm/mp3/m4a shob handle hobe)
-    try:
-        _to_wav(raw_path, ref_wav)
-    except HTTPException:
-        _safe_remove(raw_path)
-        raise
+    # reference: uploaded, ba trained voice er saved reference.wav
+    if reference is not None and reference.filename:
+        ext = os.path.splitext(reference.filename)[1].lower()
+        if ext not in ALLOWED_AUDIO:
+            raise HTTPException(400, f"Audio format support kore na: {ext}. WAV/MP3 daw.")
+        raw_path = os.path.join(WORK_DIR, f"{job}_raw{ext}")
+        data = await reference.read()
+        if not data:
+            raise HTTPException(400, "Reference audio khali.")
+        with open(raw_path, "wb") as f:
+            f.write(data)
+        try:
+            _to_wav(raw_path, ref_wav)
+        except HTTPException:
+            _safe_remove(raw_path)
+            raise
+    elif voice_dir and os.path.exists(os.path.join(voice_dir, "reference.wav")):
+        shutil.copy(os.path.join(voice_dir, "reference.wav"), ref_wav)
+    else:
+        raise HTTPException(400, "Reference audio daw (ba trained voice select koro).")
 
     # synthesize
     try:
         engines.synthesize(
             text=text, ref_wav=ref_wav, out_path=out_path, language=language,
+            voice_dir=voice_dir,
             exaggeration=exaggeration, cfg_weight=cfg_weight,
             temperature=temperature, pause_ms=pause_ms,
         )
@@ -242,6 +277,107 @@ async def youtube_audio(
         filename="youtube_reference.wav",
         background=BackgroundTask(_safe_remove, out_wav),
     )
+
+
+@app.post("/api/train")
+async def train(
+    voice_name: str = Form(..., description="Human name for this voice"),
+    language: str = Form(..., description="'bn' or 'en'"),
+    reference: UploadFile = File(None, description="5-10 min voice (wav/mp3) — or use youtube_url"),
+    youtube_url: str = Form("", description="YouTube URL (alternative to file)"),
+    start: float = Form(0),
+    duration: float = Form(300),
+    epochs: int = Form(12),
+):
+    """Tomar voice e fine-tune (Chatterbox full-T3) — background job. Returns job_id + voice_id."""
+    language = language if language in ("bn", "en") else "bn"
+    voice_id = f"{_slug(voice_name)}-{uuid.uuid4().hex[:6]}"
+    out_dir = os.path.join(VOICES_DIR, voice_id)
+    os.makedirs(out_dir, exist_ok=True)
+    train_audio = os.path.join(WORK_DIR, f"{voice_id}_train.wav")
+    status_file = os.path.join(WORK_DIR, f"{voice_id}_status.json")
+
+    # get audio -> normalized wav
+    if reference is not None and reference.filename:
+        ext = os.path.splitext(reference.filename)[1].lower()
+        if ext not in ALLOWED_AUDIO:
+            raise HTTPException(400, f"Audio format support kore na: {ext}.")
+        raw = os.path.join(WORK_DIR, f"{voice_id}_raw{ext}")
+        data = await reference.read()
+        if not data:
+            raise HTTPException(400, "Audio khali.")
+        with open(raw, "wb") as f:
+            f.write(data)
+        try:
+            _to_wav(raw, train_audio)
+        finally:
+            _safe_remove(raw)
+    elif youtube_url.strip():
+        _youtube_to_wav(youtube_url.strip(), max(0.0, float(start)),
+                        max(30.0, min(float(duration), 900.0)), train_audio)
+    else:
+        raise HTTPException(400, "Voice file ba YouTube URL daw.")
+
+    # save a short reference clip for later generation
+    if shutil.which("ffmpeg"):
+        subprocess.run(["ffmpeg", "-y", "-i", train_audio, "-t", "25",
+                        "-ac", "1", "-ar", str(TARGET_SR), os.path.join(out_dir, "reference.wav")],
+                       capture_output=True)
+
+    # launch training subprocess (headless train_voice.py)
+    cmd = [sys.executable, os.path.join(HERE, "train_voice.py"),
+           "--audio", train_audio, "--language", language, "--voice-id", voice_id,
+           "--out-dir", out_dir, "--status-file", status_file,
+           "--epochs", str(int(epochs)), "--name", voice_name]
+    proc = subprocess.Popen(cmd, cwd=HERE)
+
+    job_id = uuid.uuid4().hex[:12]
+    TRAIN_JOBS[job_id] = {"status_file": status_file, "voice_id": voice_id,
+                          "out_dir": out_dir, "proc": proc}
+    return {"job_id": job_id, "voice_id": voice_id, "language": language}
+
+
+@app.get("/api/train/status/{job_id}")
+def train_status(job_id: str):
+    j = TRAIN_JOBS.get(job_id)
+    if not j:
+        raise HTTPException(404, "Job pawa jay nai.")
+    st = {"stage": "starting", "progress_pct": 0, "message": "", "done": False, "error": None,
+          "voice_id": j["voice_id"]}
+    try:
+        with open(j["status_file"], encoding="utf-8") as f:
+            st.update(json.load(f))
+    except Exception:
+        pass
+    alive = j["proc"].poll() is None
+    st["alive"] = alive
+    if not alive and not st["done"] and not st["error"]:
+        st["error"] = f"Training process theme geche (exit {j['proc'].returncode})."
+    return st
+
+
+@app.get("/api/voices")
+def voices():
+    """Trained voice list (VOICES_DIR e voice.json ache emon)."""
+    out = []
+    try:
+        for d in sorted(os.listdir(VOICES_DIR)):
+            vj = os.path.join(VOICES_DIR, d, "voice.json")
+            if os.path.exists(vj):
+                try:
+                    meta = json.load(open(vj, encoding="utf-8"))
+                except Exception:
+                    meta = {}
+                out.append({
+                    "voice_id": d,
+                    "name": meta.get("name") or d,
+                    "language": meta.get("language", "?"),
+                    "engine": meta.get("engine", "chatterbox-finetune"),
+                    "has_reference": os.path.exists(os.path.join(VOICES_DIR, d, "reference.wav")),
+                })
+    except OSError:
+        pass
+    return out
 
 
 @app.get("/")
