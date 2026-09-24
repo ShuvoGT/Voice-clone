@@ -92,6 +92,13 @@ def main():
     p.add_argument("--out-dir", default=".")
     args = p.parse_args()
 
+    # Windows console cp1252 -> ✓ / Bangla print crash na kore, utf-8 kori
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     os.makedirs(args.out_dir, exist_ok=True)
     ref = os.path.join(args.out_dir, "ref.wav")
 
