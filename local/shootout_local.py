@@ -24,6 +24,7 @@ import argparse
 import glob
 import os
 import subprocess
+import sys
 
 
 def to_f32(a):
@@ -38,12 +39,13 @@ def yt_to_wav(url, start, dur, dst):
     print(f"[i] YouTube theke reference download ({start}-{start+dur}s)...")
     base = os.path.splitext(dst)[0] + "_src"
     sec = f"*{start}-{start + dur}"
-    subprocess.run(["yt-dlp", "-f", "bestaudio/best", "--no-playlist", "--quiet",
+    ytdlp = [sys.executable, "-m", "yt_dlp"]   # bare 'yt-dlp' Windows PATH e nai
+    subprocess.run(ytdlp + ["-f", "bestaudio/best", "--no-playlist", "--quiet",
                     "--no-warnings", "--download-sections", sec,
                     "-o", base + ".%(ext)s", url], check=False)
     srcs = glob.glob(base + ".*")
     if not srcs:
-        subprocess.run(["yt-dlp", "-f", "bestaudio/best", "--no-playlist", "--quiet",
+        subprocess.run(ytdlp + ["-f", "bestaudio/best", "--no-playlist", "--quiet",
                         "--no-warnings", "-o", base + ".%(ext)s", url], check=False)
         srcs = glob.glob(base + ".*")
     if not srcs:
