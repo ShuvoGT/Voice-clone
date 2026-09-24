@@ -1,0 +1,6 @@
+# Local CPU shootout deps (Python 3.11 or 3.13 — NOT 3.14).
+# IndicF5 nije alada install:  pip install git+https://github.com/ai4bharat/IndicF5.git
+torch>=2.2          # CPU build thik ache (Iris Xe accelerate korbe na)
+transformers==4.46.3
+soundfile
+numpy
