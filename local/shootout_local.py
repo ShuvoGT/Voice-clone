@@ -44,14 +44,19 @@ def yt_to_wav(url, start, dur, dst):
                     "--no-warnings", "--download-sections", sec,
                     "-o", base + ".%(ext)s", url], check=False)
     srcs = glob.glob(base + ".*")
-    if not srcs:
+    if srcs:
+        # section already trimmed by yt-dlp -> just convert (double-seek koro na)
+        subprocess.run(["ffmpeg", "-y", "-i", srcs[0], "-ac", "1", "-ar", "24000",
+                        dst, "-loglevel", "error"], check=True)
+    else:
+        # fallback: full download -> ffmpeg diye cut
         subprocess.run(ytdlp + ["-f", "bestaudio/best", "--no-playlist", "--quiet",
                         "--no-warnings", "-o", base + ".%(ext)s", url], check=False)
         srcs = glob.glob(base + ".*")
-    if not srcs:
-        raise SystemExit("YouTube audio download fail. Link check koro / yt-dlp install ache?")
-    subprocess.run(["ffmpeg", "-y", "-ss", str(start), "-t", str(dur),
-                    "-i", srcs[0], "-ac", "1", "-ar", "24000", dst, "-loglevel", "error"], check=True)
+        if not srcs:
+            raise SystemExit("YouTube audio download fail. Link check koro।")
+        subprocess.run(["ffmpeg", "-y", "-ss", str(start), "-t", str(dur),
+                        "-i", srcs[0], "-ac", "1", "-ar", "24000", dst, "-loglevel", "error"], check=True)
     print(f"[✓] Reference: {dst}")
 
 
